@@ -10,6 +10,7 @@ from aws_cdk import (
     aws_ec2 as ec2,
     aws_iam as iam,
     aws_logs as logs,
+    aws_cloudwatch as cloudwatch,
     Duration,
 )
 from constructs import Construct
@@ -83,7 +84,7 @@ class ApigwHttpApiLambdaDynamodbPythonCdkStack(Stack):
             point_in_time_recovery=True,
         )
 
-        # Create the Lambda function to receive the request
+        # Create the Lambda function with X-Ray tracing and log retention
         api_hanlder = lambda_.Function(
             self,
             "ApiHandler",
@@ -97,6 +98,7 @@ class ApigwHttpApiLambdaDynamodbPythonCdkStack(Stack):
             ),
             memory_size=1024,
             timeout=Duration.minutes(5),
+            tracing=lambda_.Tracing.ACTIVE,
             log_retention=logs.RetentionDays.ONE_YEAR,
         )
 
@@ -111,12 +113,13 @@ class ApigwHttpApiLambdaDynamodbPythonCdkStack(Stack):
             retention=logs.RetentionDays.ONE_YEAR,
         )
 
-        # Create API Gateway with access logging
-        apigw_.LambdaRestApi(
+        # Create API Gateway with X-Ray tracing and access logging
+        api = apigw_.LambdaRestApi(
             self,
             "Endpoint",
             handler=api_hanlder,
             deploy_options=apigw_.StageOptions(
+                tracing_enabled=True,
                 access_log_destination=apigw_.LogGroupLogDestination(api_log_group),
                 access_log_format=apigw_.AccessLogFormat.json_with_standard_fields(
                     caller=True,
@@ -130,4 +133,24 @@ class ApigwHttpApiLambdaDynamodbPythonCdkStack(Stack):
                     user=True,
                 ),
             ),
+        )
+
+        # CloudWatch Alarm for Lambda errors
+        lambda_error_alarm = cloudwatch.Alarm(
+            self,
+            "LambdaErrorAlarm",
+            metric=api_hanlder.metric_errors(),
+            threshold=1,
+            evaluation_periods=1,
+            alarm_description="Alert when Lambda function errors occur",
+        )
+
+        # CloudWatch Alarm for API Gateway 5xx errors
+        api_error_alarm = cloudwatch.Alarm(
+            self,
+            "ApiGateway5xxAlarm",
+            metric=api.metric_server_error(),
+            threshold=5,
+            evaluation_periods=2,
+            alarm_description="Alert when API Gateway returns 5xx errors",
         )
